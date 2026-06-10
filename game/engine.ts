@@ -49,10 +49,14 @@ export async function createGather(opts: EngineOpts): Promise<GatherHandle> {
   }
 
   let socket: Socket | null = null
+  // scene.events 要等 SceneManager boot 後才存在，不能在 new 完就 once()；
+  // 用 opts.onReady（scene create() 結尾呼叫）當就緒訊號
+  let sceneReady!: () => void
+  const readyPromise = new Promise<void>((resolve) => { sceneReady = resolve })
   const scene = new GatherScene({
     room: opts.room,
     me: meWire,
-    onReady: () => {},
+    onReady: () => sceneReady(),
     onMoveStep: (x: number, y: number, dir: Dir) => socket?.emit('move', { x, y, dir }),
   })
 
@@ -70,9 +74,7 @@ export async function createGather(opts: EngineOpts): Promise<GatherHandle> {
     scene,
   })
 
-  await new Promise<void>((resolve) => {
-    scene.events.once(Phaser.Scenes.Events.CREATE, () => resolve())
-  })
+  await readyPromise
 
   socket = connectSocket()
   const others = new Map<string, PlayerWire>()

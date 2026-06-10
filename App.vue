@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ChatEntry, Furniture, Me, PlayerWire, RoomData } from './game/types'
 import type { GatherHandle } from './game/engine'
 import type { GatherScene } from './game/scene'
@@ -70,11 +70,16 @@ onMounted(async () => {
       y: Math.min(Math.max(prof.profile.last_y, 0), roomData.height - 1),
     }
 
-    if (!avatarFilename.value) needAvatar.value = true
-    else await enterRoom()
+    // 先收掉 loading 讓 .stage（canvasHost）渲染出來，才能掛 Phaser
+    loading.value = false
+    if (!avatarFilename.value) {
+      needAvatar.value = true
+      return
+    }
+    await nextTick()
+    await enterRoom()
   } catch (e) {
     fatal.value = e instanceof Error ? e.message : String(e)
-  } finally {
     loading.value = false
   }
 })
@@ -86,7 +91,11 @@ onBeforeUnmount(() => {
 })
 
 async function enterRoom() {
-  if (!me.value || !room.value || !canvasHost.value) return
+  if (!me.value || !room.value) return
+  if (!canvasHost.value) {
+    fatal.value = '畫布容器尚未就緒（canvasHost null）— 請回報這個 bug'
+    return
+  }
   const { createGather } = await import('./game/engine')
   handle = await createGather({
     parent: canvasHost.value,
@@ -150,11 +159,13 @@ async function uploadAvatar() {
 
 // ---------- chat ----------
 
-function sendChat() {
+function sendChat(e?: Event) {
   const text = chatInput.value.trim()
   if (!text || !handle) return
   handle.sendChat(text)
   chatInput.value = ''
+  // 送出後把焦點還給遊戲，方向鍵才能繼續走路（blur 會觸發 setTyping(false)）
+  ;(e?.target as HTMLElement | undefined)?.blur?.()
 }
 
 function chatFocus(t: boolean) {

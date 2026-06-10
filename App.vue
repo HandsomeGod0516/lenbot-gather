@@ -225,6 +225,12 @@ function pickFurImage(e: Event) {
 async function uploadFurniture() {
   const f = newFur.value
   if (!f.file || !f.name.trim()) { editorMsg.value = '家具需要名稱和圖片'; return }
+  const w = Math.round(Number(f.tile_w)), h = Math.round(Number(f.tile_h))
+  if (!(w >= 1 && w <= 8 && h >= 1 && h <= 8)) {
+    editorMsg.value = '寬高單位是「格」（1 格 = 32 像素），請填 1–8。'
+    return
+  }
+  f.tile_w = w; f.tile_h = h
   uploadingFur.value = true
   editorMsg.value = ''
   try {
@@ -317,10 +323,11 @@ async function removeFurniture(f: Furniture) {
           <div class="fur-form">
             <input v-model="newFur.name" placeholder="名稱（如：會議桌）" maxlength="50">
             <div class="row">
-              <label>寬 <input v-model.number="newFur.tile_w" type="number" min="1" max="8"></label>
-              <label>高 <input v-model.number="newFur.tile_h" type="number" min="1" max="8"></label>
+              <label>寬 <input v-model.number="newFur.tile_w" type="number" min="1" max="8"> 格</label>
+              <label>高 <input v-model.number="newFur.tile_h" type="number" min="1" max="8"> 格</label>
               <label class="solid"><input v-model="newFur.is_solid" type="checkbox"> 阻擋</label>
             </div>
+            <p class="hint">尺寸單位是「格」（1 格 = 32 像素），1–8 格。例：桌子 2×1、沙發 2×2。</p>
             <input ref="furFileInput" type="file" accept="image/*" @change="pickFurImage">
             <button class="btn primary" :disabled="uploadingFur" @click="uploadFurniture">
               {{ uploadingFur ? '上傳中…' : '上傳家具' }}

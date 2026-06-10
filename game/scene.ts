@@ -1,24 +1,20 @@
 // phaser.esm.js 只有 named exports（無 default）— Rollup build 會炸，必須用 namespace import
 import * as Phaser from 'phaser'
 import type { Dir, Furniture, PlayerWire, RoomData, RoomItem } from './types'
-import { BODY_H, ensureBodySheet, shirtColorFor } from './body'
-import { ensureFallbackHead, loadCircleAvatar } from './avatar'
+import { ensureFallbackHead, loadCircleAvatar, shirtColorFor } from './avatar'
 
 const STEP_MS = 170
-const HEAD = 30                    // 照片頭顯示直徑 px
-const HEAD_Y = -25                 // 頭中心相對 container 的 y
+const HEAD = 40                    // 照片頭顯示直徑 px（角色就是照片本人，不加像素身體）
+const HEAD_Y = -8                  // 頭中心相對 container 的 y
 const DX: Record<Dir, number> = { down: 0, up: 0, left: -1, right: 1 }
 const DY: Record<Dir, number> = { down: 1, up: -1, left: 0, right: 0 }
 
 interface PlayerSprite {
   wire: PlayerWire
   container: Phaser.GameObjects.Container
-  body: Phaser.GameObjects.Sprite
   head: Phaser.GameObjects.Image
   bubble: Phaser.GameObjects.Container | null
   bubbleTimer: Phaser.Time.TimerEvent | null
-  idleTimer: Phaser.Time.TimerEvent | null
-  bodyKey: string
 }
 
 interface ItemSprite {
@@ -213,25 +209,22 @@ export class GatherScene extends Phaser.Scene {
 
   private buildPlayer(wire: PlayerWire, isMe: boolean): PlayerSprite {
     const T = this.T
-    const bodyKey = `body-${Math.abs(wire.userId) % 8}`
-    ensureBodySheet(this, bodyKey, shirtColorFor(wire.userId))
 
-    const shadow = this.add.ellipse(0, 15, 26, 9, 0x000000, 0.35)
-    const body = this.add.sprite(0, 16, bodyKey, `${wire.dir}-0`).setOrigin(0.5, 1)
+    const shadow = this.add.ellipse(0, 14, 30, 10, 0x000000, 0.35)
     const fbKey = `head-fb-${wire.userId}`
     ensureFallbackHead(this, fbKey, wire.name, shirtColorFor(wire.userId))
     const head = this.add.image(0, HEAD_Y, fbKey).setDisplaySize(HEAD, HEAD)
-    const nameText = this.add.text(0, 18, wire.name, {
+    const nameText = this.add.text(0, 16, wire.name, {
       fontSize: '10px', fontFamily: 'Inter, sans-serif', color: isMe ? '#9ee6b8' : '#cdd3e0',
     }).setOrigin(0.5, 0).setShadow(0, 1, '#000000', 2)
 
     const cx = wire.x * T + T / 2
     const cy = wire.y * T + T / 2
-    const container = this.add.container(cx, cy, [shadow, body, head, nameText]).setDepth(cy)
+    const container = this.add.container(cx, cy, [shadow, head, nameText]).setDepth(cy)
 
     const ps: PlayerSprite = {
-      wire: { ...wire }, container, body, head,
-      bubble: null, bubbleTimer: null, idleTimer: null, bodyKey,
+      wire: { ...wire }, container, head,
+      bubble: null, bubbleTimer: null,
     }
     if (wire.avatar) {
       const avKey = `head-${wire.avatar}`
@@ -244,18 +237,19 @@ export class GatherScene extends Phaser.Scene {
 
   private destroyPlayer(ps: PlayerSprite) {
     ps.bubbleTimer?.remove()
-    ps.idleTimer?.remove()
     this.tweens.killTweensOf(ps.container)
+    this.tweens.killTweensOf(ps.head)
     ps.container.destroy()
   }
 
-  private setFacing(ps: PlayerSprite, dir: Dir, moving: boolean) {
-    if (moving) {
-      ps.body.anims.play(`${ps.bodyKey}-walk-${dir}`, true)
-    } else {
-      ps.body.anims.stop()
-      ps.body.setFrame(`${dir}-0`)
-    }
+  /** 走一步時頭微微跳一下，沒有身體動畫也有「在走」的感覺 */
+  private stepBob(ps: PlayerSprite) {
+    this.tweens.killTweensOf(ps.head)
+    ps.head.y = HEAD_Y
+    this.tweens.add({
+      targets: ps.head, y: HEAD_Y - 4,
+      duration: STEP_MS / 2, yoyo: true, ease: 'Sine.easeOut',
+    })
   }
 
   setMySid(sid: string) { this.mySid = sid }
@@ -282,17 +276,12 @@ export class GatherScene extends Phaser.Scene {
     const tx = x * this.T + this.T / 2
     const ty = y * this.T + this.T / 2
     this.tweens.killTweensOf(ps.container)
-    if (ps.container.x === tx && ps.container.y === ty) {
-      this.setFacing(ps, dir, false)
-      return
-    }
-    this.setFacing(ps, dir, true)
+    if (ps.container.x === tx && ps.container.y === ty) return
+    this.stepBob(ps)
     this.tweens.add({
       targets: ps.container, x: tx, y: ty, duration: STEP_MS,
       onUpdate: () => ps.container.setDepth(ps.container.y),
     })
-    ps.idleTimer?.remove()
-    ps.idleTimer = this.time.delayedCall(STEP_MS + 90, () => this.setFacing(ps, ps.wire.dir, false))
   }
 
   // ---------- 自己移動 ----------
@@ -325,14 +314,13 @@ export class GatherScene extends Phaser.Scene {
 
     if (!passable) {
       w.dir = dir
-      this.setFacing(me, dir, false)
       this.sendMove(w.x, w.y, dir)
       return
     }
 
     w.x = tx; w.y = ty; w.dir = dir
     this.meMoving = true
-    this.setFacing(me, dir, true)
+    this.stepBob(me)
     this.sendMove(tx, ty, dir)
     this.tweens.add({
       targets: me.container,
@@ -340,10 +328,7 @@ export class GatherScene extends Phaser.Scene {
       y: ty * this.T + this.T / 2,
       duration: STEP_MS,
       onUpdate: () => me.container.setDepth(me.container.y),
-      onComplete: () => {
-        this.meMoving = false
-        if (!this.heldDir()) this.setFacing(me, w.dir, false)
-      },
+      onComplete: () => { this.meMoving = false },
     })
   }
 
@@ -407,7 +392,6 @@ export class GatherScene extends Phaser.Scene {
       if (on) this.makeItemInteractive(rec)
       else { rec.img.disableInteractive(); rec.img.clearTint() }
     }
-    if (this.mePlayer) this.setFacing(this.mePlayer, this.mePlayer.wire.dir, false)
     this.emitEditor()
   }
 

@@ -1,5 +1,15 @@
 import type * as Phaser from 'phaser'
 
+/** 每人固定一個代表色（fallback 頭像底色用），依 userId 取 */
+const PALETTE = [
+  '#4f8df7', '#e0563f', '#3fae6a', '#c9a23f',
+  '#9a6cf0', '#e06fae', '#3fb6c9', '#7d9a4e',
+]
+
+export function shirtColorFor(userId: number): string {
+  return PALETTE[Math.abs(userId) % PALETTE.length]
+}
+
 /**
  * 照片圓頭：抓 /api/gather/assets/<filename>（同源帶 cookie），
  * 中央正方裁切 → 圓形 clip → 畫進 canvas → 註冊成 Phaser texture。

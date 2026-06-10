@@ -1,4 +1,4 @@
-import type Phaser from 'phaser'
+import type * as Phaser from 'phaser'
 
 /**
  * 照片圓頭：抓 /api/gather/assets/<filename>（同源帶 cookie），

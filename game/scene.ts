@@ -1,4 +1,5 @@
-import Phaser from 'phaser'
+// phaser.esm.js 只有 named exports（無 default）— Rollup build 會炸，必須用 namespace import
+import * as Phaser from 'phaser'
 import type { Dir, Furniture, PlayerWire, RoomData, RoomItem } from './types'
 import { BODY_H, ensureBodySheet, shirtColorFor } from './body'
 import { ensureFallbackHead, loadCircleAvatar } from './avatar'

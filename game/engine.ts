@@ -1,4 +1,5 @@
-import Phaser from 'phaser'
+// phaser.esm.js 只有 named exports（無 default）— Rollup build 會炸，必須用 namespace import
+import * as Phaser from 'phaser'
 import { io, type Socket } from 'socket.io-client'
 import { GatherScene } from './scene'
 import type { ChatEntry, Dir, Me, PlayerWire, RoomData } from './types'

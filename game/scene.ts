@@ -190,17 +190,22 @@ export class GatherScene extends Phaser.Scene {
     this.rebuildBlocked()
   }
 
-  /** 家具庫或佈置有變（上傳新家具、別的 admin 儲存）→ 換新 room 資料重畫 */
-  refreshRoom(room: RoomData) {
+  /**
+   * 家具庫或佈置有變（上傳新家具、別的 admin 儲存）→ 換新 room 資料重畫。
+   * keepItems：編輯中上傳新家具時，畫布上的未儲存擺放是唯一真相，
+   * 不能被 DB 內容清掉 — 只更新家具庫與 texture。
+   */
+  refreshRoom(room: RoomData, keepItems = false) {
     this.room = room
     this.furnitureById = new Map(room.furniture.map(f => [f.id, f]))
+    const after = () => { if (keepItems) this.rebuildBlocked(); else this.redrawItems() }
     const missing = room.furniture.filter(f => !this.textures.exists(this.furKey(f)))
     if (missing.length) {
       for (const f of missing) this.load.image(this.furKey(f), `/api/gather/assets/${f.image_filename}`)
-      this.load.once(Phaser.Loader.Events.COMPLETE, () => this.redrawItems())
+      this.load.once(Phaser.Loader.Events.COMPLETE, after)
       this.load.start()
     } else {
-      this.redrawItems()
+      after()
     }
   }
 
@@ -429,17 +434,35 @@ export class GatherScene extends Phaser.Scene {
     this.ghost = null
     if (furnitureId !== null) {
       const fur = this.furnitureById.get(furnitureId)
-      if (fur && this.textures.exists(this.furKey(fur))) {
-        this.ghost = this.add.image(0, 0, this.furKey(fur))
-          .setOrigin(0).setAlpha(0.55).setDepth(999999)
-          .setDisplaySize(fur.tile_w * this.T, fur.tile_h * this.T)
-          .setVisible(false)
-        this.clearSelection()
-      } else {
+      if (!fur) {
         this.placingId = null
+      } else if (this.textures.exists(this.furKey(fur))) {
+        this.makeGhost(fur)
+      } else {
+        // 圖還沒進 texture（剛上傳/載入失敗過）：現載，載完 ghost 才出現
+        this.load.image(this.furKey(fur), `/api/gather/assets/${fur.image_filename}`)
+        this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+          if (this.placingId !== furnitureId) return
+          if (this.textures.exists(this.furKey(fur))) {
+            this.makeGhost(fur)
+          } else {
+            this.placingId = null
+            this.events.emit('editor-error', `「${fur.name}」圖片載入失敗，請重新整理或重傳`)
+            this.emitEditor()
+          }
+        })
+        this.load.start()
       }
     }
     this.emitEditor()
+  }
+
+  private makeGhost(fur: Furniture) {
+    this.ghost = this.add.image(0, 0, this.furKey(fur))
+      .setOrigin(0).setAlpha(0.55).setDepth(999999)
+      .setDisplaySize(fur.tile_w * this.T, fur.tile_h * this.T)
+      .setVisible(false)
+    this.clearSelection()
   }
 
   private onPointerMove(p: Phaser.Input.Pointer) {
@@ -466,6 +489,9 @@ export class GatherScene extends Phaser.Scene {
     if (rec) {
       this.rebuildBlocked()
       this.markDirty()
+    } else {
+      // texture 缺失等原因放不上去 → 不能無聲失敗
+      this.events.emit('editor-error', `「${fur.name}」圖片尚未載入完成，請稍候再點一次`)
     }
   }
 

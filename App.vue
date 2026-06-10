@@ -42,6 +42,7 @@ const dirty = ref(false)
 const savingLayout = ref(false)
 const editorMsg = ref('')
 const newFur = ref({ name: '', tile_w: 1, tile_h: 1, is_solid: true, file: null as File | null })
+const furFileInput = ref<HTMLInputElement | null>(null)
 const uploadingFur = ref(false)
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -120,13 +121,15 @@ async function enterRoom() {
     dirty.value = s.dirty
     placing.value = s.placing
   })
+  handle.scene.events.on('editor-error', (msg: string) => { editorMsg.value = msg })
   inRoom.value = true
 }
 
-async function reloadRoom() {
+/** keepItems：編輯中重抓家具庫時，保住畫布上未儲存的擺放 */
+async function reloadRoom(keepItems = false) {
   const fresh = await api<RoomData>('/api/gather/room')
   room.value = fresh
-  scene.value?.refreshRoom(fresh)
+  scene.value?.refreshRoom(fresh, keepItems)
 }
 
 // ---------- avatar ----------
@@ -233,7 +236,10 @@ async function uploadFurniture() {
     fd.append('image', f.file)
     await api('/api/gather/furniture', { method: 'POST', body: fd })
     newFur.value = { name: '', tile_w: 1, tile_h: 1, is_solid: true, file: null }
-    await reloadRoom()
+    // DOM 的檔案選擇也要清，否則畫面看似還掛著檔案、model 卻是空的，
+    // 連續選同一檔案時 change 也不會再觸發
+    if (furFileInput.value) furFileInput.value.value = ''
+    await reloadRoom(true) // 保住畫布上尚未儲存的擺放
     editorMsg.value = '家具已新增 ✓'
   } catch (e) {
     editorMsg.value = `上傳失敗：${e instanceof Error ? e.message : e}`
@@ -269,13 +275,18 @@ async function removeFurniture(f: Furniture) {
         </button>
       </header>
 
-      <div class="stage-wrap">
-        <div ref="canvasHost" class="stage" :class="{ editing: editMode }" />
+      <p v-if="inRoom && !connected" class="offline-banner">
+        ⚠️ 即時同步未連線 — 看不到其他人、訊息送不出去（移動和佈置編輯不受影響）
+      </p>
 
-        <div v-if="chatLog.length && !editMode" class="chat-log">
-          <p v-for="c in chatLog.slice(-6)" :key="c.at + c.sid">
-            <b>{{ c.name }}</b>：{{ c.text }}
-          </p>
+      <div class="stage-wrap">
+        <div class="stage-box">
+          <div ref="canvasHost" class="stage" :class="{ editing: editMode }" />
+          <div v-if="chatLog.length && !editMode" class="chat-log">
+            <p v-for="c in chatLog.slice(-6)" :key="c.at + c.sid">
+              <b>{{ c.name }}</b>：{{ c.text }}
+            </p>
+          </div>
         </div>
 
         <aside v-if="editMode" class="editor">
@@ -310,7 +321,7 @@ async function removeFurniture(f: Furniture) {
               <label>高 <input v-model.number="newFur.tile_h" type="number" min="1" max="8"></label>
               <label class="solid"><input v-model="newFur.is_solid" type="checkbox"> 阻擋</label>
             </div>
-            <input type="file" accept="image/*" @change="pickFurImage">
+            <input ref="furFileInput" type="file" accept="image/*" @change="pickFurImage">
             <button class="btn primary" :disabled="uploadingFur" @click="uploadFurniture">
               {{ uploadingFur ? '上傳中…' : '上傳家具' }}
             </button>
@@ -381,9 +392,27 @@ async function removeFurniture(f: Furniture) {
 .btn.primary { border-color: var(--success); color: var(--success); }
 .btn.danger { border-color: var(--danger); color: var(--danger); }
 
-.stage-wrap { position: relative; display: flex; gap: 10px; }
-.stage {
+.offline-banner {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #ffb454;
+  background: rgba(255, 180, 84, .08);
+  border: 1px solid rgba(255, 180, 84, .3);
+  border-radius: var(--r-sm);
+}
+
+.stage-wrap { display: flex; gap: 10px; justify-content: center; }
+.stage-box {
+  position: relative;
   flex: 1; min-width: 0;
+  /* 高度鎖在視窗內：扣掉 topbar/狀態列/聊天列，寬度跟著 5:3 反推，
+     不然大螢幕上聊天列會被推出畫面外 */
+  max-width: calc((100vh - 240px) * 5 / 3);
+  max-width: calc((100dvh - 240px) * 5 / 3);
+}
+.stage {
+  width: 100%;
   border: 1px solid var(--line-2); border-radius: var(--r-md);
   overflow: hidden;
   aspect-ratio: 5 / 3;

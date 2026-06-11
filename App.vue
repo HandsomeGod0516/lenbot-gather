@@ -45,14 +45,23 @@ const newFur = ref({ name: '', tile_w: 1, tile_h: 1, is_solid: true, file: null 
 const furFileInput = ref<HTMLInputElement | null>(null)
 const uploadingFur = ref(false)
 
-// 語音（LiveKit）
+// 語音（LiveKit）— 進房自動加入（像 Meet），拒絕麥克風也能聽
 type Voice = InstanceType<typeof import('./game/voice').GatherVoice>
 let voice: Voice | null = null
 let volumeTimer: ReturnType<typeof setInterval> | null = null
+let voiceMsgTimer: ReturnType<typeof setTimeout> | null = null
 const voiceState = ref<'off' | 'connecting' | 'on'>('off')
 const voiceMuted = ref(false)
+const micOk = ref(true)
+const audioBlocked = ref(false)
 const voiceUserIds = ref<number[]>([])
 const voiceMsg = ref('')
+
+function setVoiceMsg(msg: string, ms = 7000) {
+  voiceMsg.value = msg
+  if (voiceMsgTimer) clearTimeout(voiceMsgTimer)
+  if (msg) voiceMsgTimer = setTimeout(() => { voiceMsg.value = '' }, ms)
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'same-origin', ...init })
@@ -106,7 +115,7 @@ onBeforeUnmount(() => {
 async function joinVoice() {
   if (!handle || voiceState.value !== 'off') return
   voiceState.value = 'connecting'
-  voiceMsg.value = ''
+  setVoiceMsg('')
   try {
     const { token, url } = await api<{ token: string; url: string }>('/api/gather/voice-token')
     const { GatherVoice } = await import('./game/voice')
@@ -114,16 +123,21 @@ async function joinVoice() {
       onStateChange: (s) => {
         if (s === 'disconnected' && voiceState.value !== 'off') {
           stopVoiceLocal()
-          voiceMsg.value = '語音已斷線'
+          setVoiceMsg('語音已斷線')
         }
       },
       onSpeakers: (ids) => scene.value?.setSpeaking(ids),
       onParticipants: (ids) => { voiceUserIds.value = ids },
-      onError: (msg) => { voiceMsg.value = msg },
+      onError: (msg) => setVoiceMsg(msg),
+      onAudioBlocked: (blocked) => { audioBlocked.value = blocked },
     })
-    await voice.connect(url, token)
+    const res = await voice.connect(url, token)
+    micOk.value = res.micOk
     voiceMuted.value = false
     voiceState.value = 'on'
+    if (!res.micOk) {
+      setVoiceMsg('未開啟麥克風 — 你聽得到別人，別人聽不到你（網址列可重新允許）', 9000)
+    }
     // 依距離調音量：≤2 格全音量，9 格外靜音
     volumeTimer = setInterval(() => {
       if (!voice || !handle) return
@@ -132,8 +146,13 @@ async function joinVoice() {
     }, 400)
   } catch (e) {
     stopVoiceLocal()
-    voiceMsg.value = e instanceof Error ? e.message : String(e)
+    setVoiceMsg(e instanceof Error ? e.message : String(e))
   }
+}
+
+/** 瀏覽器擋自動播放時，使用者點一下解鎖聲音 */
+async function enableSound() {
+  await voice?.startAudio()
 }
 
 function toggleMute() {
@@ -147,6 +166,8 @@ function stopVoiceLocal() {
   if (volumeTimer) { clearInterval(volumeTimer); volumeTimer = null }
   voiceState.value = 'off'
   voiceMuted.value = false
+  micOk.value = true
+  audioBlocked.value = false
   voiceUserIds.value = []
   scene.value?.setSpeaking([])
 }
@@ -190,6 +211,8 @@ async function enterRoom() {
   })
   handle.scene.events.on('editor-error', (msg: string) => { editorMsg.value = msg })
   inRoom.value = true
+  // 像 Meet：一進房就詢問麥克風並加入語音（拒絕也能聽）
+  joinVoice()
 }
 
 /** keepItems：編輯中重抓家具庫時，保住畫布上未儲存的擺放 */
@@ -338,43 +361,65 @@ async function removeFurniture(f: Furniture) {
     <p v-else-if="fatal" class="state error">{{ fatal }}</p>
 
     <template v-else>
-      <header class="bar">
-        <span class="title">虛擬辦公室</span>
-        <span class="dot" :class="{ on: connected }" :title="connected ? '已連線' : '未連線'" />
-        <span class="online">{{ players.length }} 人在線</span>
-        <span class="names">{{ players.map(p => p.name).join('、') }}</span>
-        <template v-if="inRoom">
-          <button v-if="voiceState === 'off'" class="btn" @click="joinVoice">🎤 加入語音</button>
-          <button v-else-if="voiceState === 'connecting'" class="btn" disabled>連線中…</button>
-          <template v-else>
-            <span class="voice-count" :title="`${voiceUserIds.length} 人在語音中`">🔊 {{ voiceUserIds.length }}</span>
-            <button class="btn" :class="{ danger: voiceMuted }" @click="toggleMute">
-              {{ voiceMuted ? '取消靜音' : '靜音' }}
-            </button>
-            <button class="btn" @click="leaveVoice">離開語音</button>
-          </template>
-        </template>
-        <button v-if="isAdmin && inRoom" class="btn" :class="{ active: editMode }" @click="toggleEdit">
-          {{ editMode ? '結束編輯' : '編輯佈置' }}
-        </button>
-      </header>
-
-      <p v-if="inRoom && !connected" class="offline-banner">
-        ⚠️ 即時同步未連線 — 看不到其他人、訊息送不出去（移動和佈置編輯不受影響）
-      </p>
-      <p v-if="voiceMsg" class="offline-banner">🎤 {{ voiceMsg }}</p>
-
       <div class="stage-wrap">
         <div class="stage-box">
           <div ref="canvasHost" class="stage" :class="{ editing: editMode }" />
+
+          <!-- HUD：左上 — 連線狀態與在線名單 -->
+          <div class="hud hud-tl" :title="players.map(p => p.name).join('、')">
+            <span class="dot" :class="{ on: connected }" />
+            <span>{{ players.length }} 人在線</span>
+            <span class="hud-names">{{ players.map(p => p.name).join('、') }}</span>
+          </div>
+
+          <!-- HUD：右上 — 語音與編輯控制 -->
+          <div v-if="inRoom" class="hud hud-tr">
+            <button v-if="voiceState === 'off'" class="btn" @click="joinVoice">🎤 加入語音</button>
+            <span v-else-if="voiceState === 'connecting'" class="hud-chip">語音連線中…</span>
+            <template v-else>
+              <span class="voice-count" :title="`${voiceUserIds.length} 人在語音中`">🔊 {{ voiceUserIds.length }}</span>
+              <span v-if="!micOk" class="hud-chip" title="瀏覽器未允許麥克風，你聽得到別人，別人聽不到你">僅收聽</span>
+              <button v-else class="btn" :class="{ danger: voiceMuted }" @click="toggleMute">
+                {{ voiceMuted ? '取消靜音' : '靜音' }}
+              </button>
+              <button class="btn" @click="leaveVoice">離開語音</button>
+            </template>
+            <button v-if="isAdmin" class="btn" :class="{ active: editMode }" @click="toggleEdit">
+              {{ editMode ? '結束編輯' : '編輯佈置' }}
+            </button>
+          </div>
+
+          <!-- 上中 toast：離線 / 語音訊息 / 點擊開聲音 -->
+          <div class="hud-toasts">
+            <p v-if="inRoom && !connected" class="toast warn">
+              ⚠️ 即時同步未連線 — 看不到其他人、訊息送不出去
+            </p>
+            <p v-if="voiceMsg" class="toast warn">🎤 {{ voiceMsg }}</p>
+            <button v-if="audioBlocked" class="toast action" @click="enableSound">
+              🔊 點一下開啟聲音
+            </button>
+          </div>
+
           <div v-if="chatLog.length && !editMode" class="chat-log">
             <p v-for="c in chatLog.slice(-6)" :key="c.at + c.sid">
               <b>{{ c.name }}</b>：{{ c.text }}
             </p>
           </div>
-        </div>
 
-        <aside v-if="editMode" class="editor">
+          <!-- 底部聊天列（畫布內） -->
+          <div v-if="inRoom" class="chat-dock">
+            <input
+              v-model="chatInput"
+              placeholder="說點什麼…（Enter 送出）"
+              maxlength="200"
+              @focus="chatFocus(true)"
+              @blur="chatFocus(false)"
+              @keydown.enter="sendChat"
+            >
+            <button class="btn" @click="sendChat">送出</button>
+          </div>
+
+          <aside v-if="editMode" class="editor">
           <h3>家具庫</h3>
           <div class="fur-grid">
             <div
@@ -413,19 +458,8 @@ async function removeFurniture(f: Furniture) {
             </button>
           </div>
           <p v-if="editorMsg" class="hint">{{ editorMsg }}</p>
-        </aside>
-      </div>
-
-      <div v-if="inRoom" class="chat-bar">
-        <input
-          v-model="chatInput"
-          placeholder="說點什麼…（Enter 送出）"
-          maxlength="200"
-          @focus="chatFocus(true)"
-          @blur="chatFocus(false)"
-          @keydown.enter="sendChat"
-        >
-        <button class="btn" @click="sendChat">送出</button>
+          </aside>
+        </div>
       </div>
 
       <div v-if="needAvatar" class="modal-mask">
@@ -451,20 +485,56 @@ async function removeFurniture(f: Furniture) {
 .state { color: var(--tx-3); padding: 40px 0; text-align: center; }
 .state.error { color: var(--danger); }
 
-.bar {
-  display: flex; align-items: center; gap: 12px;
+/* HUD：浮在畫布上的控制列 */
+.hud {
+  position: absolute; z-index: 8; /* 高於編輯器浮窗，結束編輯等按鈕永遠點得到 */
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
   font-size: 12px; color: var(--tx-2);
+  background: rgba(10, 12, 16, .72);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  max-width: calc(100% - 20px);
 }
-.title { letter-spacing: .2em; color: var(--tx-1); font-weight: 600; }
+.hud-tl { top: 10px; left: 10px; }
+.hud-tr { top: 10px; right: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.hud .btn { padding: 4px 10px; }
+.hud-chip { color: var(--tx-3); flex: none; }
+.hud-names {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--tx-3); max-width: 24vw;
+}
 .dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--tx-4); flex: none;
 }
 .dot.on { background: var(--success); }
-.online { flex: none; }
-.names {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--tx-3); flex: 1; min-width: 0;
+
+.hud-toasts {
+  position: absolute; z-index: 6;
+  top: 52px; left: 50%; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  width: max-content; max-width: 90%;
+  pointer-events: none;
+}
+.toast {
+  margin: 0; padding: 7px 12px;
+  font-size: 12px; border-radius: var(--r-sm);
+  pointer-events: none; /* 警告類不收事件，免得擋到底下的 HUD/畫布 */
+}
+.toast.action { pointer-events: auto; }
+.toast.warn {
+  color: #ffb454;
+  background: rgba(30, 22, 8, .85);
+  border: 1px solid rgba(255, 180, 84, .3);
+}
+.toast.action {
+  color: var(--success);
+  background: rgba(8, 28, 20, .9);
+  border: 1px solid var(--success);
+  cursor: pointer;
 }
 
 .btn {
@@ -480,24 +550,14 @@ async function removeFurniture(f: Furniture) {
 
 .voice-count { color: var(--success); font-size: 12px; flex: none; }
 
-.offline-banner {
-  margin: 0;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: #ffb454;
-  background: rgba(255, 180, 84, .08);
-  border: 1px solid rgba(255, 180, 84, .3);
-  border-radius: var(--r-sm);
-}
-
-.stage-wrap { display: flex; gap: 10px; justify-content: center; }
+.stage-wrap { display: flex; justify-content: center; }
 .stage-box {
   position: relative;
   flex: 1; min-width: 0;
-  /* 高度鎖在視窗內：扣掉 topbar/狀態列/聊天列，寬度跟著 5:3 反推，
-     不然大螢幕上聊天列會被推出畫面外 */
-  max-width: calc((100vh - 240px) * 5 / 3);
-  max-width: calc((100dvh - 240px) * 5 / 3);
+  /* 控制項都在畫布內（HUD），只需扣 portal topbar + padding，
+     畫布吃滿剩餘視窗高、寬度照 5:3 反推 */
+  max-width: calc((100vh - 150px) * 5 / 3);
+  max-width: calc((100dvh - 150px) * 5 / 3);
 }
 .stage {
   width: 100%;
@@ -510,7 +570,7 @@ async function removeFurniture(f: Furniture) {
 .stage :deep(canvas) { display: block; width: 100% !important; height: 100% !important; }
 
 .chat-log {
-  position: absolute; left: 10px; top: 10px;
+  position: absolute; left: 12px; bottom: 60px; z-index: 4;
   max-width: 46%;
   background: rgba(0, 0, 0, .55);
   border-radius: var(--r-sm);
@@ -521,22 +581,38 @@ async function removeFurniture(f: Furniture) {
 .chat-log p { margin: 2px 0; }
 .chat-log b { color: var(--tx-1); font-weight: 600; }
 
-.chat-bar { display: flex; gap: 8px; }
-.chat-bar input {
-  flex: 1;
-  background: var(--bg-input);
-  border: 1px solid var(--line-2); border-radius: var(--r-sm);
-  padding: 9px 12px; color: var(--tx-1); outline: none;
+.chat-dock {
+  position: absolute; z-index: 5;
+  left: 50%; bottom: 10px; transform: translateX(-50%);
+  width: min(520px, calc(100% - 20px));
+  display: flex; gap: 8px;
 }
-.chat-bar input:focus { border-color: var(--focus-ring); }
+.chat-dock input {
+  flex: 1; min-width: 0;
+  background: rgba(10, 12, 16, .72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  padding: 8px 12px; color: var(--tx-1); outline: none;
+}
+.chat-dock input:focus { border-color: var(--focus-ring); }
+.chat-dock .btn {
+  background: rgba(10, 12, 16, .72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
 
 .editor {
-  width: 260px; flex: none;
+  position: absolute; z-index: 7;
+  top: 54px; right: 10px; bottom: 10px; /* 從 HUD 下緣開始，不蓋住右上控制列 */
+  width: min(272px, calc(100% - 20px));
   border: 1px solid var(--line-2); border-radius: var(--r-md);
-  background: var(--bg-tile);
+  background: rgba(13, 13, 13, .92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   padding: 14px;
   display: flex; flex-direction: column; gap: 10px;
-  max-height: 70vh; overflow-y: auto;
+  overflow-y: auto;
 }
 .editor h3 {
   margin: 0; font-size: 11px; letter-spacing: .2em;
@@ -606,8 +682,8 @@ async function removeFurniture(f: Furniture) {
 .modal input[type="file"] { font-size: 12px; color: var(--tx-3); }
 .modal .btn { width: 100%; padding: 10px; }
 
-@media (max-width: 860px) {
-  .stage-wrap { flex-direction: column; }
-  .editor { width: 100%; max-height: none; }
+@media (max-width: 640px) {
+  .hud-names { display: none; }
+  .chat-log { max-width: 70%; bottom: 56px; }
 }
 </style>

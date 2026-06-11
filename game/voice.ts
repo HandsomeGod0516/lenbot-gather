@@ -20,6 +20,8 @@ export interface VoiceCallbacks {
   onSpeakers: (userIds: number[]) => void
   onParticipants: (userIds: number[]) => void
   onError: (msg: string) => void
+  /** 瀏覽器自動播放限制：true = 需要使用者點一下才放得出聲音 */
+  onAudioBlocked: (blocked: boolean) => void
 }
 
 /** 距離（格）→ 音量：≤2 格全音量，9 格以外聽不到 */
@@ -65,6 +67,9 @@ export class GatherVoice {
       this.cleanup()
       this.cb.onStateChange('disconnected')
     })
+    room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+      this.cb.onAudioBlocked(!room.canPlaybackAudio)
+    })
 
     try {
       await room.connect(url, token)
@@ -73,15 +78,23 @@ export class GatherVoice {
     }
     this.room = room
 
+    // 像 Meet：進來就要麥克風；拒絕/沒裝置 → 留在房裡「只聽不講」
+    let micOk = true
     try {
       await room.localParticipant.setMicrophoneEnabled(true)
     } catch {
-      // 沒麥克風權限也讓人留在語音房「只聽不講」
-      this.cb.onError('無法取得麥克風權限 — 你聽得到別人，但別人聽不到你')
+      micOk = false
     }
 
     this.cb.onStateChange('connected')
+    this.cb.onAudioBlocked(!room.canPlaybackAudio)
     this.emitParticipants()
+    return { micOk }
+  }
+
+  /** 瀏覽器擋自動播放時，由使用者手勢觸發 */
+  async startAudio() {
+    await this.room?.startAudio().catch(() => {})
   }
 
   setMuted(muted: boolean) {

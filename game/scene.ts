@@ -162,8 +162,10 @@ export class GatherScene extends Phaser.Scene {
   }
 
   private setItemDepth(rec: ItemSprite) {
+    // 家具永遠墊在所有玩家底下（玩家 depth = container.y ≥ 0），
+    // 家具彼此間仍照下緣排序
     const fur = this.furnitureById.get(rec.item.furniture_id)
-    rec.img.setDepth((rec.item.y + (fur?.tile_h ?? 1)) * this.T - 8)
+    rec.img.setDepth(-5000 + (rec.item.y + (fur?.tile_h ?? 1)))
   }
 
   private createItemSprite(item: RoomItem): ItemSprite | null {

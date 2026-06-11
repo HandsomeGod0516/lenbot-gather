@@ -13,6 +13,7 @@ interface PlayerSprite {
   wire: PlayerWire
   container: Phaser.GameObjects.Container
   head: Phaser.GameObjects.Image
+  ring: Phaser.GameObjects.Arc        // 說話中的綠圈
   bubble: Phaser.GameObjects.Container | null
   bubbleTimer: Phaser.Time.TimerEvent | null
 }
@@ -211,6 +212,8 @@ export class GatherScene extends Phaser.Scene {
     const T = this.T
 
     const shadow = this.add.ellipse(0, 14, 30, 10, 0x000000, 0.35)
+    const ring = this.add.circle(0, HEAD_Y, HEAD / 2 + 3)
+      .setStrokeStyle(2.5, 0x00d18a).setFillStyle(0, 0).setVisible(false)
     const fbKey = `head-fb-${wire.userId}`
     ensureFallbackHead(this, fbKey, wire.name, shirtColorFor(wire.userId))
     const head = this.add.image(0, HEAD_Y, fbKey).setDisplaySize(HEAD, HEAD)
@@ -220,10 +223,10 @@ export class GatherScene extends Phaser.Scene {
 
     const cx = wire.x * T + T / 2
     const cy = wire.y * T + T / 2
-    const container = this.add.container(cx, cy, [shadow, head, nameText]).setDepth(cy)
+    const container = this.add.container(cx, cy, [shadow, ring, head, nameText]).setDepth(cy)
 
     const ps: PlayerSprite = {
-      wire: { ...wire }, container, head,
+      wire: { ...wire }, container, head, ring,
       bubble: null, bubbleTimer: null,
     }
     if (wire.avatar) {
@@ -351,6 +354,15 @@ export class GatherScene extends Phaser.Scene {
   getMyPosition() {
     const w = this.mePlayer?.wire
     return w ? { x: w.x, y: w.y } : null
+  }
+
+  /** 語音「說話中」綠圈（userIds 來自 LiveKit ActiveSpeakers，identity = userId） */
+  setSpeaking(userIds: number[]) {
+    const speaking = new Set(userIds)
+    if (this.mePlayer) this.mePlayer.ring.setVisible(speaking.has(this.mePlayer.wire.userId))
+    for (const ps of this.players.values()) {
+      ps.ring.setVisible(speaking.has(ps.wire.userId))
+    }
   }
 
   // ---------- 聊天泡泡 ----------

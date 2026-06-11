@@ -45,6 +45,15 @@ const newFur = ref({ name: '', tile_w: 1, tile_h: 1, is_solid: true, file: null 
 const furFileInput = ref<HTMLInputElement | null>(null)
 const uploadingFur = ref(false)
 
+// 語音（LiveKit）
+type Voice = InstanceType<typeof import('./game/voice').GatherVoice>
+let voice: Voice | null = null
+let volumeTimer: ReturnType<typeof setInterval> | null = null
+const voiceState = ref<'off' | 'connecting' | 'on'>('off')
+const voiceMuted = ref(false)
+const voiceUserIds = ref<number[]>([])
+const voiceMsg = ref('')
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'same-origin', ...init })
   if (!res.ok) {
@@ -86,10 +95,68 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  leaveVoice()
   handle?.destroy()
   handle = null
   if (avatarPreview.value) URL.revokeObjectURL(avatarPreview.value)
 })
+
+// ---------- 語音 ----------
+
+async function joinVoice() {
+  if (!handle || voiceState.value !== 'off') return
+  voiceState.value = 'connecting'
+  voiceMsg.value = ''
+  try {
+    const { token, url } = await api<{ token: string; url: string }>('/api/gather/voice-token')
+    const { GatherVoice } = await import('./game/voice')
+    voice = new GatherVoice({
+      onStateChange: (s) => {
+        if (s === 'disconnected' && voiceState.value !== 'off') {
+          stopVoiceLocal()
+          voiceMsg.value = '語音已斷線'
+        }
+      },
+      onSpeakers: (ids) => scene.value?.setSpeaking(ids),
+      onParticipants: (ids) => { voiceUserIds.value = ids },
+      onError: (msg) => { voiceMsg.value = msg },
+    })
+    await voice.connect(url, token)
+    voiceMuted.value = false
+    voiceState.value = 'on'
+    // 依距離調音量：≤2 格全音量，9 格外靜音
+    volumeTimer = setInterval(() => {
+      if (!voice || !handle) return
+      const pos = handle.getPositions()
+      voice.updateVolumes(pos.me, new Map(pos.others.map(o => [o.userId, { x: o.x, y: o.y }])))
+    }, 400)
+  } catch (e) {
+    stopVoiceLocal()
+    voiceMsg.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function toggleMute() {
+  if (!voice) return
+  voiceMuted.value = !voiceMuted.value
+  voice.setMuted(voiceMuted.value)
+}
+
+/** 清掉本地語音狀態（不含 room.disconnect，給斷線 callback 用） */
+function stopVoiceLocal() {
+  if (volumeTimer) { clearInterval(volumeTimer); volumeTimer = null }
+  voiceState.value = 'off'
+  voiceMuted.value = false
+  voiceUserIds.value = []
+  scene.value?.setSpeaking([])
+}
+
+function leaveVoice() {
+  const v = voice
+  voice = null
+  stopVoiceLocal()
+  v?.disconnect()
+}
 
 async function enterRoom() {
   if (!me.value || !room.value) return
@@ -276,6 +343,17 @@ async function removeFurniture(f: Furniture) {
         <span class="dot" :class="{ on: connected }" :title="connected ? '已連線' : '未連線'" />
         <span class="online">{{ players.length }} 人在線</span>
         <span class="names">{{ players.map(p => p.name).join('、') }}</span>
+        <template v-if="inRoom">
+          <button v-if="voiceState === 'off'" class="btn" @click="joinVoice">🎤 加入語音</button>
+          <button v-else-if="voiceState === 'connecting'" class="btn" disabled>連線中…</button>
+          <template v-else>
+            <span class="voice-count" :title="`${voiceUserIds.length} 人在語音中`">🔊 {{ voiceUserIds.length }}</span>
+            <button class="btn" :class="{ danger: voiceMuted }" @click="toggleMute">
+              {{ voiceMuted ? '取消靜音' : '靜音' }}
+            </button>
+            <button class="btn" @click="leaveVoice">離開語音</button>
+          </template>
+        </template>
         <button v-if="isAdmin && inRoom" class="btn" :class="{ active: editMode }" @click="toggleEdit">
           {{ editMode ? '結束編輯' : '編輯佈置' }}
         </button>
@@ -284,6 +362,7 @@ async function removeFurniture(f: Furniture) {
       <p v-if="inRoom && !connected" class="offline-banner">
         ⚠️ 即時同步未連線 — 看不到其他人、訊息送不出去（移動和佈置編輯不受影響）
       </p>
+      <p v-if="voiceMsg" class="offline-banner">🎤 {{ voiceMsg }}</p>
 
       <div class="stage-wrap">
         <div class="stage-box">
@@ -398,6 +477,8 @@ async function removeFurniture(f: Furniture) {
 .btn.active { border-color: var(--success); color: var(--success); }
 .btn.primary { border-color: var(--success); color: var(--success); }
 .btn.danger { border-color: var(--danger); color: var(--danger); }
+
+.voice-count { color: var(--success); font-size: 12px; flex: none; }
 
 .offline-banner {
   margin: 0;

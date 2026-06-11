@@ -22,6 +22,8 @@ export interface GatherHandle {
   socket: Socket
   sendChat: (text: string) => void
   notifyRoomUpdated: () => void
+  /** 給語音算距離音量用：自己 + 其他人的最新格子座標 */
+  getPositions: () => { me: { x: number; y: number } | null; others: Array<{ userId: number; x: number; y: number }> }
   destroy: () => void
 }
 
@@ -131,6 +133,10 @@ export async function createGather(opts: EngineOpts): Promise<GatherHandle> {
     socket,
     sendChat: (text: string) => socket?.emit('chat', text),
     notifyRoomUpdated: () => socket?.emit('room-updated'),
+    getPositions: () => ({
+      me: scene.getMyPosition(),
+      others: [...others.values()].map(o => ({ userId: o.userId, x: o.x, y: o.y })),
+    }),
     destroy: () => {
       socket?.disconnect()
       game.destroy(true)

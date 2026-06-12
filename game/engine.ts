@@ -66,13 +66,14 @@ export async function createGather(opts: EngineOpts): Promise<GatherHandle> {
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: opts.parent,
-    width: opts.room.width * opts.room.tile,
-    height: opts.room.height * opts.room.tile,
+    // RESIZE：canvas 跟著容器大小走，地圖用攝影機（跟隨+縮放）瀏覽
+    width: opts.parent.clientWidth || 800,
+    height: opts.parent.clientHeight || 600,
     backgroundColor: '#0d0f14',
     roundPixels: true,
     scale: {
-      mode: Phaser.Scale.FIT,
-      autoCenter: Phaser.Scale.CENTER_BOTH,
+      mode: Phaser.Scale.RESIZE,
+      autoCenter: Phaser.Scale.NO_CENTER,
     },
     scene,
   })

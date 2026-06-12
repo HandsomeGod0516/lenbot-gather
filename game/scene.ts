@@ -87,6 +87,23 @@ export class GatherScene extends Phaser.Scene {
     this.wasd = kb.addKeys('W,A,S,D') as GatherScene['wasd']
     this.input.mouse?.disableContextMenu()
 
+    // Enter 聚焦聊天框（打字中由 input 自己處理、不重複觸發）
+    kb.on('keydown-ENTER', () => {
+      if (!this.typing && !this.editMode) this.events.emit('chat-focus')
+    })
+
+    // 攝影機：跟著自己、限制在地圖範圍內、可縮放
+    const cam = this.cameras.main
+    cam.setBounds(0, 0, this.room.width * this.T, this.room.height * this.T)
+    cam.startFollow(this.mePlayer.container, true, 0.12, 0.12)
+    cam.setZoom(this.clampZoom(1.25))
+    this.scale.on(Phaser.Scale.Events.RESIZE, () => {
+      cam.setZoom(this.clampZoom(cam.zoom))
+    })
+    this.input.on('wheel', (_p: Phaser.Input.Pointer, _o: unknown[], _dx: number, dy: number) => {
+      this.adjustZoom(dy > 0 ? -0.12 : 0.12)
+    })
+
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => this.onPointerMove(p))
     this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: unknown[]) => this.onPointerDown(p, over))
     this.input.on('drag', (_p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject, dragX: number, dragY: number) => {
@@ -342,6 +359,22 @@ export class GatherScene extends Phaser.Scene {
     if (key === this.lastSent) return
     this.lastSent = key
     this.opts.onMoveStep(x, y, dir)
+  }
+
+  // ---------- 縮放 ----------
+
+  /** 最小縮放 = 地圖恰好蓋滿視窗（不露出地圖外的黑邊） */
+  private clampZoom(z: number) {
+    const minZoom = Math.max(
+      this.scale.width / (this.room.width * this.T),
+      this.scale.height / (this.room.height * this.T),
+    )
+    return Math.min(2.5, Math.max(minZoom, z))
+  }
+
+  adjustZoom(delta: number) {
+    const cam = this.cameras.main
+    cam.setZoom(this.clampZoom(cam.zoom + delta))
   }
 
   /** 聊天輸入框 focus 時停掉遊戲鍵盤，避免邊打字邊走路 */

@@ -24,6 +24,7 @@ const connected = ref(false)
 const players = ref<PlayerWire[]>([])
 const chatLog = ref<ChatEntry[]>([])
 const chatInput = ref('')
+const chatInputEl = ref<HTMLInputElement | null>(null)
 const inRoom = ref(false)
 
 // avatar 上傳
@@ -210,6 +211,7 @@ async function enterRoom() {
     placing.value = s.placing
   })
   handle.scene.events.on('editor-error', (msg: string) => { editorMsg.value = msg })
+  handle.scene.events.on('chat-focus', () => chatInputEl.value?.focus())
   inRoom.value = true
   // 像 Meet：一進房就詢問麥克風並加入語音（拒絕也能聽）
   joinVoice()
@@ -400,21 +402,28 @@ async function removeFurniture(f: Furniture) {
             </button>
           </div>
 
+          <!-- 右下：地圖縮放 -->
+          <div v-if="inRoom" class="hud hud-br">
+            <button class="btn zoom" title="縮小（滾輪也可以）" @click="scene?.adjustZoom(-0.2)">−</button>
+            <button class="btn zoom" title="放大（滾輪也可以）" @click="scene?.adjustZoom(0.2)">＋</button>
+          </div>
+
           <div v-if="chatLog.length && !editMode" class="chat-log">
             <p v-for="c in chatLog.slice(-6)" :key="c.at + c.sid">
               <b>{{ c.name }}</b>：{{ c.text }}
             </p>
           </div>
 
-          <!-- 底部聊天列（畫布內） -->
+          <!-- 底部聊天列（畫布內）；.stop 防止 Enter 冒泡回 Phaser 又把焦點抓回來 -->
           <div v-if="inRoom" class="chat-dock">
             <input
+              ref="chatInputEl"
               v-model="chatInput"
-              placeholder="說點什麼…（Enter 送出）"
+              placeholder="說點什麼…（Enter 開始輸入 / 送出）"
               maxlength="200"
               @focus="chatFocus(true)"
               @blur="chatFocus(false)"
-              @keydown.enter="sendChat"
+              @keydown.enter.stop="sendChat"
             >
             <button class="btn" @click="sendChat">送出</button>
           </div>
@@ -500,7 +509,9 @@ async function removeFurniture(f: Furniture) {
 }
 .hud-tl { top: 10px; left: 10px; }
 .hud-tr { top: 10px; right: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.hud-br { bottom: 10px; right: 10px; gap: 4px; }
 .hud .btn { padding: 4px 10px; }
+.hud .btn.zoom { padding: 2px 11px; font-size: 16px; line-height: 1.4; }
 .hud-chip { color: var(--tx-3); flex: none; }
 .hud-names {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -550,20 +561,19 @@ async function removeFurniture(f: Furniture) {
 
 .voice-count { color: var(--success); font-size: 12px; flex: none; }
 
-.stage-wrap { display: flex; justify-content: center; }
+.stage-wrap { display: flex; }
 .stage-box {
   position: relative;
   flex: 1; min-width: 0;
-  /* 控制項都在畫布內（HUD），只需扣 portal topbar + padding，
-     畫布吃滿剩餘視窗高、寬度照 5:3 反推 */
-  max-width: calc((100vh - 150px) * 5 / 3);
-  max-width: calc((100dvh - 150px) * 5 / 3);
 }
 .stage {
   width: 100%;
+  /* RESIZE 模式：canvas 跟容器大小走，攝影機負責瀏覽地圖 →
+     直接吃滿視窗剩餘高度（扣 topbar + 外層 padding） */
+  height: calc(100vh - 70px);
+  height: calc(100dvh - 70px);
   border: 1px solid var(--line-2); border-radius: var(--r-md);
   overflow: hidden;
-  aspect-ratio: 5 / 3;
   background: #0d0f14;
 }
 .stage.editing { border-color: var(--success); }

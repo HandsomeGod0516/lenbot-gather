@@ -76,7 +76,19 @@ const players = new Map()
 
 const wire = (sid, p) => ({
   sid, userId: p.userId, name: p.name, avatar: p.avatar, x: p.x, y: p.y, dir: p.dir,
+  hp: p.hp, ko: Math.max(0, p.koUntil - Date.now()),
 })
+
+// ---------- 打架（純娛樂）----------
+// 命中與血量由伺服器仲裁；admin 拿棒球棍、其他人用拳頭
+const WEAPONS = {
+  bat: { dmg: 34, cd: 600 },
+  fist: { dmg: 15, cd: 450 },
+}
+const HIT_RANGE = 1.9   // 格
+const MAX_HP = 100
+const KO_MS = 5000
+const KO_POS = { x: 1, y: 1 }  // 被打死丟到左上角
 
 io.on('connection', (socket) => {
   const u = socket.data.user
@@ -89,6 +101,10 @@ io.on('connection', (socket) => {
     x: s.x,
     y: s.y,
     dir: 'down',
+    hp: MAX_HP,
+    koUntil: 0,
+    lastAttack: 0,
+    weapon: u.role === 'admin' ? 'bat' : 'fist',
   }
 
   socket.join(ROOM)
@@ -100,11 +116,45 @@ io.on('connection', (socket) => {
   socket.to(ROOM).emit('player-joined', wire(socket.id, player))
 
   socket.on('move', (m) => {
+    if (player.koUntil > Date.now()) return // 昏倒中不能動
     const x = Number(m?.x), y = Number(m?.y)
     const dir = ['down', 'left', 'right', 'up'].includes(m?.dir) ? m.dir : 'down'
     if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x > 199 || y > 199) return
     player.x = x; player.y = y; player.dir = dir
     socket.to(ROOM).emit('player-moved', { sid: socket.id, x, y, dir })
+  })
+
+  // Z 揮擊：範圍內所有人掉血；歸零 → 丟到左上角 KO 5 秒後滿血復活
+  socket.on('attack', () => {
+    const now = Date.now()
+    if (player.koUntil > now) return
+    const w = WEAPONS[player.weapon]
+    if (now - player.lastAttack < w.cd) return
+    player.lastAttack = now
+    io.to(ROOM).emit('attacked', { sid: socket.id, weapon: player.weapon })
+
+    for (const [sid, p] of players) {
+      if (sid === socket.id || p.koUntil > now) continue
+      if (Math.hypot(p.x - player.x, p.y - player.y) > HIT_RANGE) continue
+      p.hp = Math.max(0, p.hp - w.dmg)
+      if (p.hp > 0) {
+        io.to(ROOM).emit('hp', { sid, hp: p.hp, dmg: w.dmg })
+        continue
+      }
+      p.koUntil = now + KO_MS
+      p.x = KO_POS.x
+      p.y = KO_POS.y
+      io.to(ROOM).emit('died', {
+        sid, name: p.name, by: player.name,
+        x: p.x, y: p.y, ms: KO_MS,
+      })
+      setTimeout(() => {
+        if (players.get(sid) !== p) return // 已離線
+        p.hp = MAX_HP
+        p.koUntil = 0
+        io.to(ROOM).emit('revived', { sid, hp: MAX_HP })
+      }, KO_MS)
+    }
   })
 
   socket.on('chat', (raw) => {

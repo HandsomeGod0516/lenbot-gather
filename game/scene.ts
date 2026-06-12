@@ -1,6 +1,6 @@
 // phaser.esm.js 只有 named exports（無 default）— Rollup build 會炸，必須用 namespace import
 import * as Phaser from 'phaser'
-import type { Dir, Furniture, PlayerWire, RoomData, RoomItem } from './types'
+import type { Dir, Furniture, PlayerWire, RoomData, RoomItem, Weapon } from './types'
 import { ensureFallbackHead, loadCircleAvatar, shirtColorFor } from './avatar'
 
 const STEP_MS = 170
@@ -14,9 +14,16 @@ interface PlayerSprite {
   container: Phaser.GameObjects.Container
   head: Phaser.GameObjects.Image
   ring: Phaser.GameObjects.Arc        // 說話中的綠圈
+  hpBar: Phaser.GameObjects.Graphics  // 頭上血條
+  hp: number
+  ko: boolean
   bubble: Phaser.GameObjects.Container | null
   bubbleTimer: Phaser.Time.TimerEvent | null
 }
+
+const MAX_HP = 100
+const HP_BAR_W = 28
+const HP_BAR_Y = -37                 // 血條相對 container 的 y（頭頂上方）
 
 interface ItemSprite {
   item: RoomItem
@@ -28,6 +35,7 @@ export interface SceneOpts {
   me: PlayerWire
   onReady: (scene: GatherScene) => void
   onMoveStep: (x: number, y: number, dir: Dir) => void
+  onAttack: () => void
 }
 
 /**
@@ -48,6 +56,8 @@ export class GatherScene extends Phaser.Scene {
 
   private meMoving = false
   private typing = false
+  private stunnedUntil = 0      // 被打死後的昏倒鎖定
+  private lastAttackAt = 0
   private lastSent = ''
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys
   private wasd!: Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>
@@ -90,6 +100,15 @@ export class GatherScene extends Phaser.Scene {
     // Enter 聚焦聊天框（打字中由 input 自己處理、不重複觸發）
     kb.on('keydown-ENTER', () => {
       if (!this.typing && !this.editMode) this.events.emit('chat-focus')
+    })
+
+    // Z 揮擊（命中由伺服器判定；本地只做節流）
+    kb.on('keydown-Z', () => {
+      const now = Date.now()
+      if (this.typing || this.editMode || now < this.stunnedUntil) return
+      if (now - this.lastAttackAt < 350) return
+      this.lastAttackAt = now
+      this.opts.onAttack()
     })
 
     // 攝影機：跟著自己、限制在地圖範圍內、可縮放
@@ -137,6 +156,7 @@ export class GatherScene extends Phaser.Scene {
 
   update() {
     if (!this.mePlayer || this.editMode || this.typing || this.meMoving) return
+    if (Date.now() < this.stunnedUntil) return // 昏倒中
     const dir = this.heldDir()
     if (dir) this.tryStep(dir)
   }
@@ -239,15 +259,19 @@ export class GatherScene extends Phaser.Scene {
     const nameText = this.add.text(0, 16, wire.name, {
       fontSize: '10px', fontFamily: 'Inter, sans-serif', color: isMe ? '#9ee6b8' : '#cdd3e0',
     }).setOrigin(0.5, 0).setShadow(0, 1, '#000000', 2)
+    const hpBar = this.add.graphics()
 
     const cx = wire.x * T + T / 2
     const cy = wire.y * T + T / 2
-    const container = this.add.container(cx, cy, [shadow, ring, head, nameText]).setDepth(cy)
+    const container = this.add.container(cx, cy, [shadow, ring, head, nameText, hpBar]).setDepth(cy)
 
     const ps: PlayerSprite = {
-      wire: { ...wire }, container, head, ring,
+      wire: { ...wire }, container, head, ring, hpBar,
+      hp: wire.hp ?? MAX_HP, ko: false,
       bubble: null, bubbleTimer: null,
     }
+    this.drawHp(ps)
+    if ((wire.ko ?? 0) > 0) this.setKo(ps, true)
     if (wire.avatar) {
       const avKey = `head-${wire.avatar}`
       loadCircleAvatar(this, avKey, wire.avatar).then((ok) => {
@@ -255,6 +279,119 @@ export class GatherScene extends Phaser.Scene {
       })
     }
     return ps
+  }
+
+  // ---------- 打架 ----------
+
+  private drawHp(ps: PlayerSprite) {
+    const g = ps.hpBar
+    const ratio = Math.max(0, Math.min(1, ps.hp / MAX_HP))
+    const color = ratio > 0.5 ? 0x36d399 : ratio > 0.25 ? 0xf5b942 : 0xff4d4f
+    g.clear()
+    g.fillStyle(0x000000, 0.55)
+    g.fillRoundedRect(-HP_BAR_W / 2 - 1, HP_BAR_Y - 1, HP_BAR_W + 2, 6, 3)
+    if (ratio > 0) {
+      g.fillStyle(color, 1)
+      g.fillRoundedRect(-HP_BAR_W / 2, HP_BAR_Y, HP_BAR_W * ratio, 4, 2)
+    }
+  }
+
+  private getPs(sid: string): PlayerSprite | undefined {
+    return sid === this.mySid ? (this.mePlayer ?? undefined) : this.players.get(sid)
+  }
+
+  private ensureWeaponTextures() {
+    if (!this.textures.exists('wpn-bat')) {
+      const g = this.make.graphics({ x: 0, y: 0 }, false)
+      g.fillStyle(0x8a5a2b, 1).fillRoundedRect(1, 0, 7, 26, 3)   // 棒身
+      g.fillStyle(0xb07c42, 1).fillRoundedRect(2, 0, 5, 9, 2)    // 棒頭
+      g.fillStyle(0x5d3d1e, 1).fillRoundedRect(2, 22, 5, 4, 2)   // 握把
+      g.generateTexture('wpn-bat', 9, 26)
+      g.destroy()
+    }
+    if (!this.textures.exists('wpn-fist')) {
+      const g = this.make.graphics({ x: 0, y: 0 }, false)
+      g.fillStyle(0xe8b890, 1).fillCircle(6, 6, 6)
+      g.fillStyle(0xd19a6b, 1).fillCircle(6, 4, 2)
+      g.generateTexture('wpn-fist', 12, 12)
+      g.destroy()
+    }
+  }
+
+  /** 揮擊動畫：武器繞角色掃一個弧 */
+  playAttack(sid: string, weapon: Weapon) {
+    const ps = this.getPs(sid)
+    if (!ps) return
+    this.ensureWeaponTextures()
+    const flip = ps.wire.dir === 'left' ? -1 : 1
+    const wpn = this.add.image(6 * flip, 0, weapon === 'bat' ? 'wpn-bat' : 'wpn-fist')
+      .setOrigin(0.5, 1)
+      .setAngle(-70 * flip)
+    ps.container.add(wpn)
+    this.tweens.add({
+      targets: wpn,
+      angle: 80 * flip,
+      duration: 150,
+      ease: 'Cubic.easeIn',
+      onComplete: () => {
+        this.tweens.add({ targets: wpn, alpha: 0, duration: 90, onComplete: () => wpn.destroy() })
+      },
+    })
+  }
+
+  /** 被打：更新血條 + 紅閃 + 傷害浮字 */
+  setHp(sid: string, hp: number, dmg?: number) {
+    const ps = this.getPs(sid)
+    if (!ps) return
+    const dropped = hp < ps.hp
+    ps.hp = hp
+    this.drawHp(ps)
+    if (!dropped) return
+    ps.head.setTint(0xff6666)
+    this.time.delayedCall(160, () => { if (ps.head.active) ps.head.clearTint() })
+    if (dmg) {
+      const t = this.add.text(ps.container.x, ps.container.y - 44, `-${dmg}`, {
+        fontSize: '13px', fontFamily: 'Inter, sans-serif', color: '#ff5b5b', fontStyle: 'bold',
+      }).setOrigin(0.5).setDepth(99999).setShadow(0, 1, '#000', 2)
+      this.tweens.add({ targets: t, y: t.y - 22, alpha: 0, duration: 700, onComplete: () => t.destroy() })
+    }
+  }
+
+  private setKo(ps: PlayerSprite, ko: boolean) {
+    ps.ko = ko
+    ps.head.setAngle(ko ? 90 : 0)
+    ps.head.setAlpha(ko ? 0.6 : 1)
+    if (ko) ps.head.setTint(0x9aa0ad)
+    else ps.head.clearTint()
+  }
+
+  /** 被打死：丟到指定位置（左上角）+ KO 視覺；自己則鎖操作 */
+  applyDeath(sid: string, x: number, y: number, ms: number) {
+    const ps = this.getPs(sid)
+    if (!ps) return
+    this.tweens.killTweensOf(ps.container)
+    ps.wire.x = x; ps.wire.y = y
+    ps.container.setPosition(x * this.T + this.T / 2, y * this.T + this.T / 2)
+    ps.container.setDepth(ps.container.y)
+    ps.hp = 0
+    this.drawHp(ps)
+    this.setKo(ps, true)
+    if (sid === this.mySid) {
+      this.stunnedUntil = Date.now() + ms
+      this.meMoving = false
+    }
+    const skull = this.add.text(ps.container.x, ps.container.y - 50, '💀', { fontSize: '18px' })
+      .setOrigin(0.5).setDepth(99999)
+    this.tweens.add({ targets: skull, y: skull.y - 26, alpha: 0, duration: 1100, onComplete: () => skull.destroy() })
+  }
+
+  applyRevive(sid: string, hp: number) {
+    const ps = this.getPs(sid)
+    if (!ps) return
+    ps.hp = hp
+    this.drawHp(ps)
+    this.setKo(ps, false)
+    if (sid === this.mySid) this.stunnedUntil = 0
   }
 
   private destroyPlayer(ps: PlayerSprite) {
@@ -419,7 +556,7 @@ export class GatherScene extends Phaser.Scene {
     g.fillRoundedRect(-bw / 2, -bh / 2, bw, bh, 7)
     g.fillTriangle(-4, bh / 2 - 1, 4, bh / 2 - 1, 0, bh / 2 + 5)
 
-    const bub = this.add.container(0, HEAD_Y - HEAD / 2 - bh / 2 - 8, [g, t])
+    const bub = this.add.container(0, HP_BAR_Y - bh / 2 - 8, [g, t])
     ps.container.add(bub)
     ps.bubble = bub
     ps.bubbleTimer = this.time.delayedCall(4500, () => {

@@ -33,7 +33,12 @@ export interface PlayerWire {
   x: number
   y: number
   dir: Dir
+  hp?: number
+  /** 剩餘昏倒毫秒（>0 = 正在 KO） */
+  ko?: number
 }
+
+export type Weapon = 'bat' | 'fist'
 
 export interface ChatEntry {
   sid: string

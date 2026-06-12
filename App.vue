@@ -419,7 +419,7 @@ async function removeFurniture(f: Furniture) {
             <input
               ref="chatInputEl"
               v-model="chatInput"
-              placeholder="說點什麼…（Enter 開始輸入 / 送出）"
+              placeholder="說點什麼…（Enter 輸入 / Z 揮擊）"
               maxlength="200"
               @focus="chatFocus(true)"
               @blur="chatFocus(false)"

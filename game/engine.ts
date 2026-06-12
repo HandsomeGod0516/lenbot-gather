@@ -2,7 +2,7 @@
 import * as Phaser from 'phaser'
 import { io, type Socket } from 'socket.io-client'
 import { GatherScene } from './scene'
-import type { ChatEntry, Dir, Me, PlayerWire, RoomData } from './types'
+import type { ChatEntry, Dir, Me, PlayerWire, RoomData, Weapon } from './types'
 
 export interface EngineOpts {
   parent: HTMLElement
@@ -61,6 +61,7 @@ export async function createGather(opts: EngineOpts): Promise<GatherHandle> {
     me: meWire,
     onReady: () => sceneReady(),
     onMoveStep: (x: number, y: number, dir: Dir) => socket?.emit('move', { x, y, dir }),
+    onAttack: () => socket?.emit('attack'),
   })
 
   const game = new Phaser.Game({
@@ -127,6 +128,23 @@ export async function createGather(opts: EngineOpts): Promise<GatherHandle> {
   })
 
   socket.on('room-updated', () => opts.onRoomUpdated())
+
+  // ---------- 打架 ----------
+  socket.on('attacked', (a: { sid: string; weapon: Weapon }) => {
+    scene.playAttack(a.sid, a.weapon)
+  })
+  socket.on('hp', (h: { sid: string; hp: number; dmg?: number }) => {
+    scene.setHp(h.sid, h.hp, h.dmg)
+  })
+  socket.on('died', (d: { sid: string; name: string; by: string; x: number; y: number; ms: number }) => {
+    const p = others.get(d.sid)
+    if (p) { p.x = d.x; p.y = d.y }
+    scene.applyDeath(d.sid, d.x, d.y, d.ms)
+    opts.onChat({ sid: 'sys', userId: 0, name: '💀', text: `${d.name} 被 ${d.by} 打昏了，左上角罰站 5 秒`, at: Date.now() })
+  })
+  socket.on('revived', (r: { sid: string; hp: number }) => {
+    scene.applyRevive(r.sid, r.hp)
+  })
 
   return {
     game,

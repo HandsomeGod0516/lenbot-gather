@@ -528,6 +528,17 @@ export class GatherScene extends Phaser.Scene {
     return w ? { x: w.x, y: w.y } : null
   }
 
+  /** 換頭像：載入新圓頭 texture 換上（KO 灰階等狀態由 tint 保留） */
+  updateAvatar(sid: string, filename: string) {
+    const ps = this.getPs(sid)
+    if (!ps) return
+    ps.wire.avatar = filename
+    const key = `head-${filename}`
+    loadCircleAvatar(this, key, filename).then((ok) => {
+      if (ok && ps.head.active) ps.head.setTexture(key).setDisplaySize(HEAD, HEAD)
+    })
+  }
+
   /** 語音「說話中」綠圈（userIds 來自 LiveKit ActiveSpeakers，identity = userId） */
   setSpeaking(userIds: number[]) {
     const speaking = new Set(userIds)

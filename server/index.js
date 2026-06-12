@@ -163,6 +163,14 @@ io.on('connection', (socket) => {
     io.to(ROOM).emit('chat', { sid: socket.id, userId: player.userId, name: player.name, text })
   })
 
+  // 換頭像：驗證檔名是自己的（gather_av_<uid>_ 前綴）再廣播
+  socket.on('avatar-changed', (raw) => {
+    const filename = String(raw ?? '')
+    if (!filename.startsWith(`gather_av_${player.userId}_`) || !/^gather_av_[0-9]+_[0-9a-fA-F-]+\.webp$/.test(filename)) return
+    player.avatar = filename
+    socket.to(ROOM).emit('avatar-updated', { sid: socket.id, avatar: filename })
+  })
+
   // admin 存了新佈置 → 通知其他人重抓 room
   socket.on('room-updated', () => {
     if (player.role === 'admin') socket.to(ROOM).emit('room-updated')

@@ -27,8 +27,9 @@ const chatInput = ref('')
 const chatInputEl = ref<HTMLInputElement | null>(null)
 const inRoom = ref(false)
 
-// avatar 上傳
+// avatar 上傳（首次必填；之後可從 HUD 更換）
 const needAvatar = ref(false)
+const changingAvatar = ref(false)
 const avatarFile = ref<File | null>(null)
 const avatarPreview = ref('')
 const uploadingAvatar = ref(false)
@@ -243,14 +244,38 @@ async function uploadAvatar() {
     fd.append('image', avatarFile.value)
     const res = await api<{ filename: string }>('/api/gather/avatar', { method: 'POST', body: fd })
     avatarFilename.value = res.filename
-    needAvatar.value = false
-    await enterRoom()
+    if (changingAvatar.value) {
+      // 已在房內：本地立即換 + 廣播
+      closeAvatarModal()
+      handle?.changeAvatar(res.filename)
+    } else {
+      needAvatar.value = false
+      await enterRoom()
+    }
   } catch (e) {
     avatarError.value = e instanceof Error ? e.message : String(e)
   } finally {
     uploadingAvatar.value = false
   }
 }
+
+function openChangeAvatar() {
+  changingAvatar.value = true
+  avatarError.value = ''
+}
+
+function closeAvatarModal() {
+  changingAvatar.value = false
+  avatarFile.value = null
+  if (avatarPreview.value) { URL.revokeObjectURL(avatarPreview.value); avatarPreview.value = '' }
+}
+
+/** modal 預覽：選了新檔用新檔；更換模式沒選檔時先顯示目前的頭像 */
+const avatarPreviewUrl = computed(() => {
+  if (avatarPreview.value) return avatarPreview.value
+  if (changingAvatar.value && avatarFilename.value) return `/api/gather/assets/${avatarFilename.value}`
+  return ''
+})
 
 // ---------- chat ----------
 
@@ -386,6 +411,7 @@ async function removeFurniture(f: Furniture) {
               </button>
               <button class="btn" @click="leaveVoice">離開語音</button>
             </template>
+            <button class="btn" title="更換你的人物照片" @click="openChangeAvatar">換頭像</button>
             <button v-if="isAdmin" class="btn" :class="{ active: editMode }" @click="toggleEdit">
               {{ editMode ? '結束編輯' : '編輯佈置' }}
             </button>
@@ -471,18 +497,19 @@ async function removeFurniture(f: Furniture) {
         </div>
       </div>
 
-      <div v-if="needAvatar" class="modal-mask">
+      <div v-if="needAvatar || changingAvatar" class="modal-mask">
         <div class="modal">
-          <h3>上傳你的大頭照</h3>
+          <h3>{{ changingAvatar ? '更換大頭照' : '上傳你的大頭照' }}</h3>
           <p class="hint">照片會裁成圓形，當作你在辦公室裡的頭。</p>
-          <div class="avatar-preview" :style="avatarPreview ? { backgroundImage: `url(${avatarPreview})` } : {}">
-            <span v-if="!avatarPreview">?</span>
+          <div class="avatar-preview" :style="avatarPreviewUrl ? { backgroundImage: `url(${avatarPreviewUrl})` } : {}">
+            <span v-if="!avatarPreviewUrl">?</span>
           </div>
           <input type="file" accept="image/*" @change="pickAvatar">
           <p v-if="avatarError" class="state error">{{ avatarError }}</p>
           <button class="btn primary" :disabled="!avatarFile || uploadingAvatar" @click="uploadAvatar">
-            {{ uploadingAvatar ? '上傳中…' : '進入辦公室' }}
+            {{ uploadingAvatar ? '上傳中…' : (changingAvatar ? '更換' : '進入辦公室') }}
           </button>
+          <button v-if="changingAvatar" class="btn" :disabled="uploadingAvatar" @click="closeAvatarModal">取消</button>
         </div>
       </div>
     </template>
